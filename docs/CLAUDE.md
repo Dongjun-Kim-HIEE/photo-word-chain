@@ -230,14 +230,34 @@ Playwright로 회원가입 → 방 생성 → 방 입장 → 사진 업로드 �
 
 ---
 
+### Phase 5 — 다음 턴 연결 ✅ 완료
+
+- [x] **DB 리팩터링**: `submit_guess`에 인라인이 아니라 이미 `dueum_start_chars`라는 별도 함수로 두음법칙이 분리돼 있었음(예상과 달랐음) — 로직은 SPEC.md v0.5와 정확히 일치해서 새로 짤 필요 없이 `compute_start_chars`로 이름만 변경, `submit_guess`도 새 이름을 부르도록 갱신
+- [x] **`submit_turn(p_room_id, p_photo_path, p_answers) returns jsonb` 신규** — 마지막 턴 조회 → 첫 턴이면 아무나 허용, 아니면 `is_invalidated`/`matched_answer_id is null`/solver 불일치를 순서대로 검사 → `compute_start_chars`로 허용 시작 글자 계산 → Phase 2 규칙(1개 이상/한글 음절/중복) 재검증 → 통과시 turns+answers insert. `pg_advisory_xact_lock(hashtext(room_id))`로 같은 방 동시 호출 직렬화
+- [x] **`turns`에 `unique(room_id, turn_number)` 제약 추가** — 동시 업로드 레이스 최종 방어선
+- [x] **`get_allowed_start_chars(p_room_id) returns text[]` 신규** — 마지막 턴이 SOLVED일 때만 허용 시작 글자 반환
+- [x] **`is_last_turn_solver(p_room_id) returns boolean` 추가 (요청 범위 밖, 필요해서 만듦)** — `turn_attempts` RLS가 `auth.uid() = user_id`(본인 시도만 조회 가능)라서, 프론트에서 "내가 마지막 턴을 맞힌 사람인가"를 직접 쿼리로 판별할 방법이 없었음. 이게 없으면 "B에게만 업로드 폼이 보인다"는 완료 조건 자체를 못 만족시켜서 추가
+- [x] `TurnUploadForm.jsx`: `turns.insert()`+`answers.insert()` 두 번 호출 → `submit_turn` 단일 RPC 호출로 교체. `error_code`별 메시지 매핑, `invalid_start_char`는 `allowedStartChars` prop으로 실제 글자 채워서 표시. `turn_number`를 더 이상 프론트가 안 넘기고 서버가 계산 — Phase 1에 남아있던 "첫 턴/후속 턴 구분 없음" 문제가 부수적으로 해결됨
+- [x] `RoomPage.jsx`: `refreshUploadGate()` 추가(`get_allowed_start_chars`+`is_last_turn_solver` 병렬 호출), `fetchTurns`/`handleTurnInsert`/`handleTurnUpdate` 전부에서 호출되도록 연결해 realtime으로도 갱신됨. 업로드 폼 노출 조건을 `turns.length === 0`에서 `turns.length === 0 || isLastTurnSolver`로 변경, `isLastTurnSolver`일 때 "다음 시작 글자: O 또는 O" 힌트 표시
+
+**겪은 문제 & 해결**
+- SQL 실행 전 정보 부족으로 두 번 막힘: (1) `submit_guess` 실제 소스와 테이블 스키마를 몰라서 리팩터링을 못 짬 → `pg_get_functiondef`/`information_schema.columns`/`pg_constraint`/`pg_policies` 조회 결과를 받은 뒤 진행. (2) SQL을 준비해서 드렸는데 실제로는 실행이 안 된 상태로 "완료?"라는 질문을 받아 바로 Playwright로 돌려보니 `submit_turn` 자체가 없다는 PostgREST 404가 떠서 발견 — `pg_proc`/`pg_constraint` 조회로 실행 여부를 직접 확인하는 절차를 거친 뒤 재실행 요청, 이후 정상 확인
+- 발견했지만 이번 스코프 밖이라 손 안 댄 것: `turns` 테이블 INSERT RLS가 `auth.uid() = posted_by`만 검사해서, `submit_turn`을 안 거치고 devtools로 직접 insert하면 턴 순서 검증을 우회할 수 있음. SPEC.md 1-1절의 "API 단에서 원자적으로 강제" 취지를 완전히 지키려면 이 RLS도 손봐야 함 — 사용자에게 알리고 보류
+
+**완료 조건 검증**: 계정 3개(A 업로더/B 정답자/C 제3자)로 Playwright 자동화 — B에게만 폼 노출(A/C는 안 보임), 허용 안 된 시작 글자는 `invalid_start_char`로 차단(정확한 글자 안내 포함), 허용된 글자로는 성공, 사진1→사진2 사슬이 A 화면에도 새로고침 없이 이어짐. 콘솔 에러 없음.
+
+**다음 세션에서 할 일**: Phase 6(신고/무효 처리) — 이제 실질적으로 핵심 게임 루프(Phase 1~5)는 전부 동작함. Phase 1 잔여 항목(이미지 압축)과 `turns` INSERT RLS 이슈는 여전히 미해결.
+
+---
+
 ## 7. 참고 — 지금 프로젝트에 있는 핵심 파일
 
 ```
 photo-word-chain/
   ├─ .env                          ← Supabase URL/key (GitHub 비공개)
   ├─ docs/
-  │   ├─ SPEC.md                   ← 게임 규칙 룰북 (v0.4)
-  │   └─ PHASES.md                 ← 개발 로드맵 (v0.3, Phase 0~11)
+  │   ├─ SPEC.md                   ← 게임 규칙 룰북 (v0.5)
+  │   └─ PHASES.md                 ← 개발 로드맵 (v0.9, Phase 0~11)
   ├─ src/
   │   ├─ lib/supabaseClient.js     ← Supabase 연결 객체
   │   ├─ features/
@@ -248,8 +268,10 @@ photo-word-chain/
   │   │       ├─ TurnUploadForm.jsx ← 사진 선택+미리보기, 정답 입력(+/-), 검증, Storage 업로드+turns/answers insert
   │   │       └─ GuessForm.jsx     ← 정답 입력 UI, submit_guess RPC 호출 + 결과(정답/오답/이미 맞힘) 표시
   │   └─ App.jsx                   ← 세션 관리 + react-router 라우팅(/, /room/:roomId)
-  └─ (Supabase: profiles/rooms/turns/answers/messages/reports 테이블 + handle_new_user 트리거
-      + Storage 버킷 `turn-photos`(private, RLS 적용))
+  └─ (Supabase: profiles/rooms/turns/answers/messages/reports/turn_attempts 테이블 + handle_new_user 트리거
+      + Storage 버킷 `turn-photos`(private, RLS 적용)
+      + RPC: submit_guess/submit_turn/compute_start_chars/get_allowed_start_chars/is_last_turn_solver
+      (전부 SQL Editor로 직접 관리, 마이그레이션 파일 미보유))
 ```
 
 커밋 이력: `initial setup` → `feat: 회원가입, 로그인 기능 추가` → `feat: 방 만들기 및 조회 기능 추가` → `docs: SPEC/PHASES/CLAUDE 문서 추가 및 Phase 1 Storage 설정 반영`
@@ -273,3 +295,4 @@ photo-word-chain/
 - Phase 3-C 진행 시점 — Presence 전용 채널로 접속자 실시간 추적 + 탭 전환 방어 코드 추가. `turns` 테이블이 Realtime publication에서 기본적으로 꺼져 있어 새로고침해야만 반영되던 문제를 발견하고 해결. Broadcast(3-D)만 남음
 - Phase 3-D 진행 시점 — Broadcast 전용 채널 골격 마련(`report_test` 이벤트로 송수신만 검증, 임시 테스트 버튼). Phase 3(3-A~3-D) 전체 완료 처리
 - Phase 4 완료 시점 — 두음법칙 최종 결정(SPEC.md v0.5), `GuessForm.jsx`로 `submit_guess` RPC 호출 + 결과 표시 구현. Phase 3-B의 postgres_changes 구독을 재사용해 정답 확정을 반영, `answers` 직접 조회는 추가하지 않음
+- Phase 5 완료 시점 — `submit_turn`/`get_allowed_start_chars`/`is_last_turn_solver` RPC 신설 + `compute_start_chars`로 두음법칙 함수 재사용(이름 정리) + `turns` unique 제약 추가. `TurnUploadForm.jsx`/`RoomPage.jsx`를 새 RPC에 맞게 갱신. 계정 3개로 완료 조건 실제 검증. `turns` INSERT RLS가 RPC 우회 가능한 상태로 남아있는 이슈 발견 및 보류 기록

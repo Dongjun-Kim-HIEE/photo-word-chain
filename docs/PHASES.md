@@ -18,7 +18,7 @@
 | 2 | 정답 등록 | 🟢 핵심 | ✅ 완료 |
 | 3 | 사슬 조회 + Realtime 인프라 | 🟢 핵심 | ✅ 완료 |
 | 4 | 맞히기 | 🟢 핵심 | ✅ 완료 |
-| 5 | 다음 턴 연결 | 🟢 핵심 | ⬜ 예정 |
+| 5 | 다음 턴 연결 | 🟢 핵심 | ✅ 완료 |
 | 6 | 신고/무효 처리 (실시간 즉석 동의) | 🟢 핵심 | ⬜ 예정 |
 | 7 | 배포 + 통합 테스트 | 🟢 핵심 | ⬜ 예정 |
 | 8 | 채팅 | 🟡 있으면 좋음 | ⬜ 예정 |
@@ -104,12 +104,23 @@
 
 ---
 
-## Phase 5 — 다음 턴 연결
+## Phase 5 — 다음 턴 연결 ✅ 완료
 
-- [ ] Phase 4에서 확정된 시작 글자를 Phase 1 업로드 검증 로직과 연동
-- [ ] 맞힌 사람 기준으로 다음 사진 업로드 가능 여부 규칙 확정
+- [x] Phase 4에서 확정된 시작 글자를 Phase 1 업로드 검증 로직과 연동 — `compute_start_chars`(구 `dueum_start_chars`, 이름만 정리)를 `submit_turn`/`get_allowed_start_chars`에서 공통 재사용
+- [x] 맞힌 사람 기준으로 다음 사진 업로드 가능 여부 규칙 확정 — `submit_turn` RPC가 `turn_attempts`에서 마지막 턴의 solver를 조회해 `auth.uid()`와 비교, 원자적으로 강제
 
-**완료 조건**: 사진 올리기 → 정답 등록 → 다른 사람이 맞히기 → 이어서 다음 사진 올리기, 한 사이클이 실제로 돈다.
+**신규 RPC/제약** (SQL Editor에서 직접 실행, 마이그레이션 파일 없음 — 프로젝트 방침대로 스키마 파일 미관리):
+- `compute_start_chars(text) returns text[]` — 두음법칙 순수 함수, 기존 `dueum_start_chars`를 이름만 변경(로직 동일). `submit_guess`도 이 이름으로 갱신
+- `submit_turn(p_room_id, p_photo_path, p_answers) returns jsonb` — 턴 생성 권한(첫 턴/직전 solver)·시작 글자·Phase 2 규칙(1개 이상/한글 음절/중복)을 원자적으로 재검증 후 turns+answers insert. `pg_advisory_xact_lock`으로 같은 방 동시 호출 직렬화
+- `is_last_turn_solver(p_room_id) returns boolean` — **요청 4개 목록엔 없었으나 추가**: `turn_attempts` RLS가 "본인 시도만 조회 가능"이라 프론트에서 "내가 마지막 턴 solver인가"를 직접 쿼리로 판별할 수 없어서 필요했음
+- `get_allowed_start_chars(p_room_id) returns text[]` — 마지막 턴이 SOLVED일 때만 허용 시작 글자 반환, 업로드 폼 힌트용
+- `turns` 테이블에 `unique (room_id, turn_number)` 제약 추가 — 동시 업로드 레이스 최종 방어선
+
+**프론트엔드**: `TurnUploadForm.jsx`의 `turns.insert()`+`answers.insert()` 두 번 호출을 `submit_turn` 단일 RPC 호출로 교체(`turn_number`도 이제 서버가 자동 계산 — Phase 1에 남아있던 "첫 턴/후속 턴 구분 없음" 문제가 이걸로 해결됨). `RoomPage.jsx`는 `refreshUploadGate()`로 `allowedStartChars`/`isLastTurnSolver`를 조회해 업로드 폼 노출 조건을 `turns.length === 0 || isLastTurnSolver`로 변경, realtime(3-B) 이벤트에서도 갱신되도록 연결.
+
+**완료 조건 충족**: 계정 3개(A: 업로더, B: 정답자, C: 제3자)로 직접 검증 — B에게만 폼이 보이고 A/C에겐 안 보임, 허용 안 된 시작 글자는 `invalid_start_char`로 차단(정확한 글자 안내 포함), 허용된 글자로는 성공, 사진1→사진2 사슬이 A 화면에도 새로고침 없이 이어짐.
+
+**발견한 이슈 (미해결, 별도 논의 필요)**: `turns` 테이블의 INSERT RLS 정책이 `auth.uid() = posted_by`만 검사해서, 로그인한 사용자라면 `submit_turn`을 거치지 않고 devtools로 `turns`에 직접 insert해서 턴 순서 검증을 우회할 수 있음. SPEC.md 1-1절의 "API 단에서 원자적으로 강제" 취지를 완전히 지키려면 이 RLS도 RPC 전용으로 조여야 하는데, 이번 5단계 요청 범위 밖이라 손대지 않음.
 
 ---
 
@@ -201,3 +212,4 @@ CLAUDE.md  ← 매 세션 "뭘 했고 뭐가 남았는지" (로그, 과거형)
 - v0.6 — Phase 3-C(Presence 트래킹 + 탭 전환 방어 코드) 완료 반영. Broadcast 채널(3-D)만 남음. Realtime publication에 `turns` 테이블이 기본적으로 꺼져 있어 새로고침 전까지 반영이 안 됐던 원인 기록.
 - v0.7 — Phase 3-D(Broadcast 채널 골격, `report_test` 이벤트로 송수신 검증) 완료 반영. Phase 3 전체(3-A~3-D) 완료 처리.
 - v0.8 — Phase 4(맞히기) 완료 반영: `submit_guess` RPC 기반 `GuessForm.jsx` 구현, 정답/오답/이미 맞힘 결과 표시. 두음법칙(SPEC.md v0.5) 최종 결정도 반영.
+- v0.9 — Phase 5(다음 턴 연결) 완료 반영: `submit_turn`/`get_allowed_start_chars`/`is_last_turn_solver` RPC + `turns` unique 제약 추가, `compute_start_chars`로 두음법칙 함수 재사용. 계정 3개로 완료 조건 실제 검증. `turns` INSERT RLS가 RPC 우회 가능한 상태로 남아있는 이슈 기록(별도 논의 필요).

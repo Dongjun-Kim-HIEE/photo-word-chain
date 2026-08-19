@@ -6,16 +6,19 @@ import { RoomList, RoomPage } from './features/rooms';
 
 export default function App() {
   const [session, setSession] = useState(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      setSessionLoaded(true);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      setSessionLoaded(true);
     });
 
     return () => subscription.unsubscribe();
@@ -24,6 +27,10 @@ export default function App() {
   const handleLogout = async () => {
     await supabase.auth.signOut();
   };
+
+  if (!sessionLoaded) {
+    return <div>불러오는 중...</div>;
+  }
 
   return (
     <BrowserRouter>

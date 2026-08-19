@@ -205,6 +205,31 @@ React(브라우저)  →  Supabase Edge Function(서버, 키 숨김)  →  네�
 
 ---
 
+### Phase 4 — 맞히기 ✅ 완료
+
+- [x] 두음법칙 최종 결정 — SPEC.md v0.5, "적용함"으로 확정 (초성 ㄹ/ㄴ + 중성 이/야/여/예/요/유 계열 조건, 유니코드 음절 분해 기반 구현)
+- [x] `GuessForm.jsx` 신규 — 최신 턴이 `matched_answer_id === null`(OPEN)이고 로그인 유저가 그 턴의 `posted_by` 본인이 아닐 때만 렌더링 (서버도 막고 있지만 프론트에서 먼저 걸러 UX 개선)
+- [x] 제출 시 `supabase.rpc('submit_guess', { p_turn_id, p_guess })` 호출 — Supabase 쪽에 이미 구현되어 있던 RPC를 그대로 사용, `answers` 테이블 직접 조회 코드는 추가하지 않음 (정답 텍스트는 클라이언트로 절대 안 옴)
+- [x] 결과 처리 — `is_correct`면 "정답입니다!" + `next_start_chars`(1개면 그대로, 2개면 "A 또는 B"), `already_solved`면 "이미 다른 사람이 맞혔습니다" + 동일하게 다음 시작 글자 안내, 둘 다 false면 "오답입니다" + 입력창 유지(재시도 가능)
+- [x] `matched_answer_id` 변경 감지는 Phase 3-B의 `postgres_changes` UPDATE 구독을 그대로 재사용 — 새 채널을 따로 만들지 않음. `turns` state의 `matchedAnswerId`가 채워지면 `GuessForm` 렌더링 조건이 자동으로 거짓이 되어 폼이 사라지고, 3-A의 "정답: ○○" 표시 로직이 그대로 이어받음(별도 콜백 연결 불필요)
+- [x] `RoomPage.jsx`에 `postedBy`(room_feed의 `actor_id` / turns INSERT payload의 `posted_by`)와 `currentUserId`(마운트 시 1회 `getUser()`) 추가해서 렌더링 조건에 사용
+
+**참고**: `next_start_chars`를 다음 턴 업로드 시 실제로 강제 검증하는 것은 Phase 5 범위 — 지금은 화면 안내만 되고 강제되진 않음.
+
+**다음 세션에서 할 일**: Phase 5(다음 턴 연결 — 시작 글자 강제 검증), Phase 1 잔여 항목(이미지 압축, 첫 턴/후속 턴 구분).
+
+---
+
+### 로컬 점검 (Phase 1~4 전체) — 버그 발견 및 수정
+
+Playwright로 회원가입 → 방 생성 → 방 입장 → 사진 업로드 → 새로고침까지 전 과정을 자동으로 돌려 점검함.
+
+- [x] 로그인/회원가입 화면, Presence("현재 접속자" 표시), Broadcast 테스트 버튼, 사진 업로드(signed URL 이미지 정상 로드) 전부 정상 확인
+- [x] **버그 발견 & 수정 — `App.jsx`의 세션 로딩 레이스**: `session` state가 초기값 `null`로 시작하는데 `/room/:roomId` 라우트가 `session ? <RoomPage/> : <Navigate to="/"/>`로 즉시 평가되어, `supabase.auth.getSession()`이 비동기로 응답 오기 전에 이미 로비로 리다이렉트됨. 로그인은 유효한데 **방 페이지에서 새로고침만 하면 로비로 튕겨나가는** 증상으로 나타남 (Phase 1 완료 조건 "새로고침해도 사진이 계속 잘 보인다"를 직접 깨뜨림). `sessionLoaded` state를 추가해 `getSession()`/`onAuthStateChange` 응답 전까지는 라우트 자체를 렌더링하지 않도록 수정. 수정 후 재검증: 새로고침해도 URL 유지, 이미지도 `naturalWidth`가 정상적으로 잡히며 로드됨
+- 이 버그는 이번 세션(Phase 3/4)에서 만든 코드가 아니라 최초 인증 구현 시점(Phase 0 이전)부터 있던 것 — 그동안 개발 중 수동 테스트에서는 우연히 안 걸렸던 것으로 추정
+
+---
+
 ## 7. 참고 — 지금 프로젝트에 있는 핵심 파일
 
 ```
@@ -219,8 +244,9 @@ photo-word-chain/
   │   │   ├─ auth/Auth.jsx         ← 로그인/회원가입 탭 (이메일+비밀번호+닉네임)
   │   │   └─ rooms/
   │   │       ├─ RoomList.jsx      ← 방 목록 + 방 만들기 폼, 클릭 시 /room/:id로 이동
-  │   │       ├─ RoomPage.jsx      ← 방 상세 화면 (turns 목록 조회/표시, signed URL 변환, 업로드 폼 연결)
-  │   │       └─ TurnUploadForm.jsx ← 사진 선택+미리보기, 정답 입력(+/-), 검증, Storage 업로드+turns/answers insert
+  │   │       ├─ RoomPage.jsx      ← 방 상세 화면 (room_feed 사슬 조회, Realtime 3채널, GuessForm/TurnUploadForm 연결)
+  │   │       ├─ TurnUploadForm.jsx ← 사진 선택+미리보기, 정답 입력(+/-), 검증, Storage 업로드+turns/answers insert
+  │   │       └─ GuessForm.jsx     ← 정답 입력 UI, submit_guess RPC 호출 + 결과(정답/오답/이미 맞힘) 표시
   │   └─ App.jsx                   ← 세션 관리 + react-router 라우팅(/, /room/:roomId)
   └─ (Supabase: profiles/rooms/turns/answers/messages/reports 테이블 + handle_new_user 트리거
       + Storage 버킷 `turn-photos`(private, RLS 적용))
@@ -246,3 +272,4 @@ photo-word-chain/
 - Phase 3-A/3-B 진행 시점 — `room_feed` 뷰 기반 사슬 조회로 전환, 정답 노출 제한 및 무효 뱃지 표시 추가(3-A), `turns` 테이블 Postgres Changes 구독으로 새 턴/상태 변경을 실시간 반영(3-B). Presence/Broadcast(3-C)는 남겨둠
 - Phase 3-C 진행 시점 — Presence 전용 채널로 접속자 실시간 추적 + 탭 전환 방어 코드 추가. `turns` 테이블이 Realtime publication에서 기본적으로 꺼져 있어 새로고침해야만 반영되던 문제를 발견하고 해결. Broadcast(3-D)만 남음
 - Phase 3-D 진행 시점 — Broadcast 전용 채널 골격 마련(`report_test` 이벤트로 송수신만 검증, 임시 테스트 버튼). Phase 3(3-A~3-D) 전체 완료 처리
+- Phase 4 완료 시점 — 두음법칙 최종 결정(SPEC.md v0.5), `GuessForm.jsx`로 `submit_guess` RPC 호출 + 결과 표시 구현. Phase 3-B의 postgres_changes 구독을 재사용해 정답 확정을 반영, `answers` 직접 조회는 추가하지 않음

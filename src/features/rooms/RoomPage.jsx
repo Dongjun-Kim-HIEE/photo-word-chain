@@ -1,13 +1,40 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabaseClient';
+import TurnUploadForm from './TurnUploadForm';
 
 export default function RoomPage() {
     const { roomId } = useParams();
     const [room, setRoom] = useState(null);
     const [creatorUsername, setCreatorUsername] = useState(null);
+    const [turns, setTurns] = useState([]);
+    const [signedUrls, setSignedUrls] = useState({});
     const [loading, setLoading] = useState(true);
     const [notFound, setNotFound] = useState(false);
+
+    const fetchTurns = async () => {
+        const { data: turnsData } = await supabase
+            .from('turns')
+            .select('*')
+            .eq('room_id', roomId)
+            .order('turn_number', { ascending: true });
+
+        const rows = turnsData ?? [];
+        const urlMap = {};
+
+        if (rows.length > 0) {
+            const { data: signedData } = await supabase.storage
+                .from('turn-photos')
+                .createSignedUrls(rows.map((turn) => turn.photo_url), 3600);
+
+            signedData?.forEach((item, i) => {
+                urlMap[rows[i].id] = item.signedUrl;
+            });
+        }
+
+        setTurns(rows);
+        setSignedUrls(urlMap);
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -32,6 +59,8 @@ export default function RoomPage() {
             }
 
             setRoom(roomData);
+
+            await fetchTurns();
 
             if (roomData.created_by) {
                 const { data: profileData } = await supabase
@@ -75,7 +104,24 @@ export default function RoomPage() {
             <Link to="/">← 방 목록</Link>
             <h2>{room.name}</h2>
             <p>만든 사람: {creatorUsername ?? '알 수 없음'}</p>
-            <p>여기서 게임이 진행됩니다.</p>
+
+            {turns.length === 0 ? (
+                <>
+                    <p>아직 사진이 없습니다. 첫 사진을 올려보세요.</p>
+                    <TurnUploadForm roomId={roomId} onUploaded={fetchTurns} />
+                </>
+            ) : (
+                <div>
+                    {turns.map((turn) => (
+                        <img
+                            key={turn.id}
+                            src={signedUrls[turn.id]}
+                            alt={`turn ${turn.turn_number}`}
+                            style={{ maxWidth: '100%', display: 'block', marginBottom: '1rem' }}
+                        />
+                    ))}
+                </div>
+            )}
         </div>
     );
 }

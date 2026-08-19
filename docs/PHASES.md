@@ -16,7 +16,7 @@
 | 0 | 스펙 정의 | 🟢 핵심 | ✅ 완료 |
 | 1 | 사진 업로드 | 🟢 핵심 | 🟡 진행 중 |
 | 2 | 정답 등록 | 🟢 핵심 | ✅ 완료 |
-| 3 | 사슬 조회 + Realtime 인프라 | 🟢 핵심 | ⬜ 예정 |
+| 3 | 사슬 조회 + Realtime 인프라 | 🟢 핵심 | ✅ 완료 |
 | 4 | 맞히기 | 🟢 핵심 | ⬜ 예정 |
 | 5 | 다음 턴 연결 | 🟢 핵심 | ⬜ 예정 |
 | 6 | 신고/무효 처리 (실시간 즉석 동의) | 🟢 핵심 | ⬜ 예정 |
@@ -75,18 +75,19 @@
 
 ---
 
-## Phase 3 — 사슬 조회 + Realtime 인프라
+## Phase 3 — 사슬 조회 + Realtime 인프라 ✅ 완료
 
-- [ ] `room_feed` 뷰 활용해 방 안 사진들을 시간순 표시
-- [ ] **RLS/쿼리 단에서 미공개 정답 차단** 확인 (SPEC.md 4절 — 프론트 렌더링만으로 숨기지 않기)
-- [ ] `SOLVED` 턴은 채택된 정답만 노출, 나머지 후보는 비공개 유지
-- [ ] **Supabase Realtime 채널 설정** — Postgres Changes 구독으로 새 사진/정답 업데이트가 새로고침 없이 반영
-- [ ] **Presence 트래킹 도입** — 방 접속자 목록 실시간 추적 (Phase 6 신고 기능의 선행 조건)
-- [ ] **Broadcast 채널 구성** — Phase 6에서 신고 알림 전파에 재사용
-- [ ] 탭 전환(visibilitychange) 시 Presence 재추적 방어 코드 (SPEC.md 5절 "구현 참고" 알려진 버그 대응)
+- [x] `room_feed` 뷰 활용해 방 안 사진들을 시간순 표시 (3-A) — `event_type='photo_turn'`만 필터링, `created_at` 오름차순
+- [x] **RLS/쿼리 단에서 미공개 정답 차단** 확인 (3-A) — `answers` RLS가 턴 업로더 본인/`matched_answer_id` 1건 외에는 걸러줌. 프론트는 `matched_answer_id`가 있을 때만 정답 영역을 렌더링(이중 안전장치)
+- [x] `SOLVED` 턴은 채택된 정답만 노출, 나머지 후보는 비공개 유지 (3-A) — `matched_answer_id`로 단건 조회
+- [x] **Supabase Realtime 채널 설정** — Postgres Changes 구독으로 새 사진/정답 업데이트가 새로고침 없이 반영 (3-B) — `turns` 테이블 INSERT/UPDATE 구독, `room-${roomId}` 채널
+- [x] **Presence 트래킹 도입** — 방 접속자 목록 실시간 추적 (Phase 6 신고 기능의 선행 조건) (3-C) — 별도 채널 `room-${roomId}-presence`, `presence.sync` 이벤트로 접속자 목록 state 반영, 방 상단에 "현재 접속자: A, B, C" 검증용 텍스트로 표시
+- [x] **Broadcast 채널 구성** — Phase 6에서 신고 알림 전파에 재사용 (3-D) — 별도 채널 `room-${roomId}-broadcast`에 `report_test` 이벤트 리스너만 등록(수신 시 콘솔 로그), 임시 테스트 버튼으로 송신 확인. 실제 신고 판정/타이머/집계 로직은 Phase 6에서
+- [x] 탭 전환(visibilitychange) 시 Presence 재추적 방어 코드 (SPEC.md 5절 "구현 참고" 알려진 버그 대응) (3-C) — `visibilitychange`에서 `visible`로 바뀌는 순간 `track()` 재호출
 
-**완료 조건**: 방에 들어가면 지금까지 이어진 사진 사슬이 순서대로 보이고, 안 풀린 턴의 정답은 절대 노출되지 않으며, 다른 사람이 사진을 올리면 새로고침 없이 화면에 바로 반영된다.
-**점검 포인트**: `answers` 테이블에도 RLS가 걸려 있는지 확인 필요
+**완료 조건 충족**: 방에 들어가면 지금까지 이어진 사진 사슬이 순서대로 보이고, 안 풀린 턴의 정답은 절대 노출되지 않으며, 다른 사람이 사진을 올리면 새로고침 없이 화면에 바로 반영된다.
+**진행 상황**: 3-A(사슬 조회+정답 노출 제한), 3-B(Realtime Postgres Changes), 3-C(Presence 트래킹 + 탭 전환 방어), 3-D(Broadcast 채널 골격) 전부 완료. 무효 처리(`is_invalidated`) 뱃지 표시까지 반영했으나 재분기 로직은 Phase 6에서 처리. Broadcast는 `report_test` 이벤트로 송수신만 검증된 골격 상태이며, 실제 신고 판정/10초 타이머/동의 집계는 Phase 6에서 구현.
+**점검 포인트**: `answers` 테이블에도 RLS가 걸려 있는지 확인 필요. Realtime을 쓰려면 대상 테이블이 `supabase_realtime` publication에 켜져 있어야 함 — `turns`는 확인 후 `alter publication supabase_realtime add table turns;`로 추가함 (기본적으로 꺼져 있어서 처음엔 반영이 안 됐던 원인이었음)
 
 ---
 
@@ -195,3 +196,6 @@ CLAUDE.md  ← 매 세션 "뭘 했고 뭐가 남았는지" (로그, 과거형)
 - v0.2 — Day 구분 제거, Phase 단일 축으로 재구성. 진행 현황 요약표 추가. 신고/투표(Phase 6) 배포 전으로 승격, 검색창(Phase 10) 하향 조정.
 - v0.3 — Phase 1에 업로드 전 이미지 압축 추가. Phase 3에 Realtime 인프라(Presence/Broadcast/Postgres Changes) 선행 작업 반영, 명칭을 "사슬 조회 + Realtime 인프라"로 변경. Phase 6 체크리스트를 SPEC.md v0.3의 "실시간 즉석 동의(10초)" 방식에 맞게 전면 재작성. 무료 플랜 7일 자동 일시정지 운영 참고 추가.
 - v0.4 — Phase 1 진행 반영: 업로드 UI + `turns` 저장(경로 기반 signed URL 방식) 완료, 압축/턴 구분은 미완으로 남김. Phase 2(정답 등록) 체크리스트 전항목 완료 처리.
+- v0.5 — Phase 3-A(room_feed 기반 사슬 조회 + 정답 노출 제한) / 3-B(Postgres Changes로 turns INSERT/UPDATE 실시간 반영) 완료 반영. Presence/Broadcast(3-C)는 미착수로 남김.
+- v0.6 — Phase 3-C(Presence 트래킹 + 탭 전환 방어 코드) 완료 반영. Broadcast 채널(3-D)만 남음. Realtime publication에 `turns` 테이블이 기본적으로 꺼져 있어 새로고침 전까지 반영이 안 됐던 원인 기록.
+- v0.7 — Phase 3-D(Broadcast 채널 골격, `report_test` 이벤트로 송수신 검증) 완료 반영. Phase 3 전체(3-A~3-D) 완료 처리.

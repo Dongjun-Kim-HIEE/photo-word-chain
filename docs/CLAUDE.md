@@ -164,6 +164,47 @@ React(브라우저)  →  Supabase Edge Function(서버, 키 숨김)  →  네�
 
 ---
 
+### Phase 3 — 사슬 조회 + Realtime 인프라 ✅ 완료
+
+**3-A — 사슬 조회 UI**
+- [x] `RoomPage.jsx`의 turns 직접 조회를 `room_feed` 뷰 기반으로 교체 — `event_type='photo_turn'`만 필터링, `created_at` 오름차순 조회 (컬럼 구성: `id`/`room_id`/`event_type`/`actor_id`/`created_at`/`text`/`photo_url` — SQL Editor로 직접 확인 후 반영)
+- [x] `room_feed`에는 없는 `turn_number`/`matched_answer_id`/`is_invalidated`는 `turns` 테이블에서 해당 id들로 별도 조회해 병합
+- [x] `matched_answer_id`가 있는 턴만 `answers`에서 그 1건을 조회해 "정답: ○○" 표시 (RLS가 이미 OPEN 턴은 걸러줌 — 프론트의 조건부 렌더링은 이중 안전장치)
+- [x] `is_invalidated=true`인 턴에 "무효 처리됨" 뱃지 표시 (재분기 로직은 Phase 6에서)
+- [x] `turns.length === 0`일 때만 업로드 폼을 보여주는 기존 로직은 그대로 유지 (Phase 5에서 다룰 부분이라 이번엔 건드리지 않음)
+
+**3-B — Postgres Changes로 실시간 반영**
+- [x] `room-${roomId}` 채널에 `turns` 테이블 INSERT/UPDATE를 `room_id=eq.${roomId}` 필터로 구독
+- [x] INSERT: 이미 목록에 있는 turn.id면 무시(중복 방지), 아니면 상태 배열에 추가하고 그 자리에서 `createSignedUrl`로 서명 URL 발급
+- [x] UPDATE: 전체 재조회 없이 해당 turn 객체의 `matched_answer_id`/`is_invalidated`만 갱신. `matched_answer_id`가 새로 채워졌고 아직 캐시에 없는 경우에만 그 정답 1건을 조회(캐시 여부 판단은 `answerTexts`를 매번 최신으로 미러링하는 ref로 처리 — setState 업데이터 안에서는 비동기 조회를 할 수 없어서)
+- [x] 컴포넌트 unmount/roomId 변경 시 `supabase.removeChannel(channel)`로 정리하는 별도 useEffect로 분리 (사슬 조회용 useEffect와 독립)
+
+**진행 순서 관련 메모**: 3-A 착수 시 `room_feed` 컬럼 구성을 몰라 한 세션 대기함 — 이 프로젝트가 스키마 파일을 따로 관리하지 않기로 한 방침(7절 참고) 때문에, SQL Editor 조회 결과를 받은 뒤 진행. 이후 3-B 요청이 3-A가 이미 끝났다는 전제로 들어와서, 실제로는 3-A가 비어 있던 상태를 먼저 알리고 사용자 확인을 받아 3-A→3-B 순서로 처리함.
+
+**겪은 문제 & 해결 — Realtime이 새로고침해야만 반영됨**
+- 3-B 코드 자체는 문제없었는데, Supabase는 테이블별로 Realtime publication을 켜줘야 postgres_changes 이벤트가 나가는데 `turns` 테이블이 기본적으로 꺼져 있었음
+- SQL Editor에서 `alter publication supabase_realtime add table turns;` 실행해서 해결. (대시보드 UI가 개편되면서 "Database → Replication" 메뉴는 이제 Read Replica용 화면으로 바뀌어 있어 헷갈림 — Realtime publication 토글은 "Database → Publications"에 있음, SQL로 직접 켜는 게 더 빠름)
+
+**3-C — Presence 트래킹**
+- [x] Presence 전용 채널 `room-${roomId}-presence` 분리 생성 (3-B의 `room-${roomId}` 채널과는 독립적으로 관리)
+- [x] `config: { presence: { key: user.id } }`로 채널 생성, `SUBSCRIBED` 콜백에서 `track({ user_id, username, online_at })` 호출 (username은 `profiles`에서 조회)
+- [x] `presence` `sync` 이벤트에서 `presenceState()`로 접속자 전체 목록을 state에 반영, 방 상단에 "현재 접속자: A, B, C" 검증용 텍스트로 표시
+- [x] `visibilitychange`가 `visible`로 바뀌는 순간 `track()` 재호출 (SPEC.md 5절의 known bug 대응)
+- [x] unmount/roomId 변경 시 `untrack()` → `removeChannel()` → visibilitychange 리스너 제거까지 순서대로 정리, 3-B의 postgres_changes 채널 cleanup과 서로 안 겹치게 별도 useEffect로 분리
+
+**3-D — Broadcast 채널 골격**
+- [x] Presence(3-C)와 별도로 `room-${roomId}-broadcast` 채널 분리 생성 (Presence/postgres_changes/broadcast 세 채널을 각각 다른 이름으로 관리)
+- [x] `report_test` 브로드캐스트 이벤트 리스너 등록, 수신 payload는 콘솔 로그만 (UI 반영 없음)
+- [x] 임시 "Broadcast 테스트" 버튼 추가 — 클릭 시 `{ from: user.id, sent_at }`를 `report_test`로 송신. 코드에 `// TEMP: Phase 6에서 실제 "억지 신고" 버튼으로 교체 예정` 주석으로 명시
+- [x] unmount/roomId 변경 시 채널 해제 — 3-C와 동일한 패턴(ref로 채널/유저 id 보관, cleanup에서 null 처리 + `removeChannel`)
+- [ ] 실제 신고 판정/10초 타이머/동의 집계 로직은 아직 없음 — Phase 6에서 구현
+
+**Phase 3 전체 완료**: 3-A(사슬 조회+정답 노출 제한) → 3-B(Postgres Changes) → 3-C(Presence) → 3-D(Broadcast 골격) 순서로 전부 완료. Phase 6 착수 시 이 세 채널(각각 `room-${roomId}`, `room-${roomId}-presence`, `room-${roomId}-broadcast`)에 실제 신고 로직만 붙이면 됨.
+
+**다음 세션에서 할 일**: Phase 4(맞히기) 또는 Phase 1의 잔여 항목(이미지 압축, 첫 턴/후속 턴 구분 검증) 중 우선순위 선택 필요.
+
+---
+
 ## 7. 참고 — 지금 프로젝트에 있는 핵심 파일
 
 ```
@@ -202,3 +243,6 @@ photo-word-chain/
 - SPEC v0.4 반영 시점 — 신고 규칙 재설계(만장일치제 → 실시간 즉석 동의) 및 Realtime 기술 검증 과정을 로그에 기록, 기술 스택 표에 Realtime 항목과 운영 주의사항(7일 자동 일시정지, Storage/Realtime 용량 한도) 추가
 - Phase 1 착수 시점 — `turn-photos` Storage 버킷 + RLS 설정 완료 및 검증 기록, `turns` 테이블 RLS 점검 결과 기록, 업로드 UI/압축은 다음 세션으로 이월. `docs/` 폴더가 이 시점 처음으로 git에 커밋됨
 - Phase 1 진행 + Phase 2 완료 시점 — turns 조회/표시, 업로드 폼 UI, 정답 유효성 검사, Storage 업로드+turns insert(경로 기반 저장 + signed URL 변환), answers insert까지 구현. 한글 파일명으로 인한 Storage InvalidKey 버그 수정. Phase 1은 압축·턴 구분이 남아 진행 중, Phase 2는 완료 처리
+- Phase 3-A/3-B 진행 시점 — `room_feed` 뷰 기반 사슬 조회로 전환, 정답 노출 제한 및 무효 뱃지 표시 추가(3-A), `turns` 테이블 Postgres Changes 구독으로 새 턴/상태 변경을 실시간 반영(3-B). Presence/Broadcast(3-C)는 남겨둠
+- Phase 3-C 진행 시점 — Presence 전용 채널로 접속자 실시간 추적 + 탭 전환 방어 코드 추가. `turns` 테이블이 Realtime publication에서 기본적으로 꺼져 있어 새로고침해야만 반영되던 문제를 발견하고 해결. Broadcast(3-D)만 남음
+- Phase 3-D 진행 시점 — Broadcast 전용 채널 골격 마련(`report_test` 이벤트로 송수신만 검증, 임시 테스트 버튼). Phase 3(3-A~3-D) 전체 완료 처리

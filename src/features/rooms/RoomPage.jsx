@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabaseClient';
 import TurnUploadForm from './TurnUploadForm';
+import GuessForm from './GuessForm';
 
 export default function RoomPage() {
     const { roomId } = useParams();
@@ -13,6 +14,7 @@ export default function RoomPage() {
     const [loading, setLoading] = useState(true);
     const [notFound, setNotFound] = useState(false);
     const [onlineUsers, setOnlineUsers] = useState([]);
+    const [currentUserId, setCurrentUserId] = useState(null);
 
     const broadcastChannelRef = useRef(null);
     const currentUserIdRef = useRef(null);
@@ -21,6 +23,18 @@ export default function RoomPage() {
     useEffect(() => {
         answerTextsRef.current = answerTexts;
     }, [answerTexts]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        supabase.auth.getUser().then(({ data: { user } }) => {
+            if (!cancelled) setCurrentUserId(user?.id ?? null);
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     const fetchTurns = async () => {
         const { data: feedData } = await supabase
@@ -52,6 +66,7 @@ export default function RoomPage() {
         const rows = feedRows.map((row) => ({
             id: row.id,
             photoPath: row.photo_url,
+            postedBy: row.actor_id,
             turnNumber: metaById[row.id]?.turn_number ?? null,
             matchedAnswerId: metaById[row.id]?.matched_answer_id ?? null,
             isInvalidated: metaById[row.id]?.is_invalidated ?? false,
@@ -149,6 +164,7 @@ export default function RoomPage() {
                     {
                         id: inserted.id,
                         photoPath: inserted.photo_url,
+                        postedBy: inserted.posted_by,
                         turnNumber: inserted.turn_number,
                         matchedAnswerId: inserted.matched_answer_id,
                         isInvalidated: inserted.is_invalidated,
@@ -381,6 +397,18 @@ export default function RoomPage() {
                             )}
                         </div>
                     ))}
+                    {(() => {
+                        const latestTurn = turns[turns.length - 1];
+                        if (
+                            latestTurn &&
+                            latestTurn.matchedAnswerId === null &&
+                            currentUserId &&
+                            latestTurn.postedBy !== currentUserId
+                        ) {
+                            return <GuessForm turnId={latestTurn.id} />;
+                        }
+                        return null;
+                    })()}
                 </div>
             )}
         </div>

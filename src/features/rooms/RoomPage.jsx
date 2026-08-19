@@ -15,6 +15,8 @@ export default function RoomPage() {
     const [notFound, setNotFound] = useState(false);
     const [onlineUsers, setOnlineUsers] = useState([]);
     const [currentUserId, setCurrentUserId] = useState(null);
+    const [allowedStartChars, setAllowedStartChars] = useState(null);
+    const [isLastTurnSolver, setIsLastTurnSolver] = useState(false);
 
     const broadcastChannelRef = useRef(null);
     const currentUserIdRef = useRef(null);
@@ -36,6 +38,15 @@ export default function RoomPage() {
         };
     }, []);
 
+    const refreshUploadGate = async () => {
+        const [{ data: allowed }, { data: solver }] = await Promise.all([
+            supabase.rpc('get_allowed_start_chars', { p_room_id: roomId }),
+            supabase.rpc('is_last_turn_solver', { p_room_id: roomId }),
+        ]);
+        setAllowedStartChars(allowed ?? null);
+        setIsLastTurnSolver(Boolean(solver));
+    };
+
     const fetchTurns = async () => {
         const { data: feedData } = await supabase
             .from('room_feed')
@@ -50,6 +61,7 @@ export default function RoomPage() {
             setTurns([]);
             setSignedUrls({});
             setAnswerTexts({});
+            await refreshUploadGate();
             return;
         }
 
@@ -98,6 +110,7 @@ export default function RoomPage() {
         setTurns(rows);
         setSignedUrls(urlMap);
         setAnswerTexts(answerTextMap);
+        await refreshUploadGate();
     };
 
     useEffect(() => {
@@ -181,6 +194,8 @@ export default function RoomPage() {
             if (signedData) {
                 setSignedUrls((prev) => ({ ...prev, [inserted.id]: signedData.signedUrl }));
             }
+
+            await refreshUploadGate();
         };
 
         const handleTurnUpdate = async (updated) => {
@@ -207,6 +222,8 @@ export default function RoomPage() {
                     setAnswerTexts((prev) => ({ ...prev, [answerData.id]: answerData.answer_text }));
                 }
             }
+
+            await refreshUploadGate();
         };
 
         const channel = supabase
@@ -409,6 +426,23 @@ export default function RoomPage() {
                         }
                         return null;
                     })()}
+                    {isLastTurnSolver && (
+                        <>
+                            {allowedStartChars && (
+                                <p>
+                                    다음 시작 글자:{' '}
+                                    {allowedStartChars.length === 1
+                                        ? allowedStartChars[0]
+                                        : `${allowedStartChars[0]} 또는 ${allowedStartChars[1]}`}
+                                </p>
+                            )}
+                            <TurnUploadForm
+                                roomId={roomId}
+                                onUploaded={fetchTurns}
+                                allowedStartChars={allowedStartChars}
+                            />
+                        </>
+                    )}
                 </div>
             )}
         </div>

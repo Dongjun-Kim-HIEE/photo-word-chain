@@ -1,7 +1,22 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 
-export default function TurnUploadForm({ roomId, onUploaded }) {
+const ERROR_MESSAGES = {
+    not_the_solver: '정답을 맞힌 사람만 다음 사진을 올릴 수 있습니다',
+    turn_not_solved: '아직 아무도 정답을 맞히지 않았습니다',
+    turn_invalidated: '이 턴은 무효 처리되었습니다',
+    no_answers: '정답을 1개 이상 입력해주세요',
+    invalid_answer_ending: '정답은 한글 음절로 끝나야 합니다',
+    duplicate_answer: '중복된 정답이 있습니다',
+};
+
+const formatAllowedStartChars = (chars) => {
+    if (!chars || chars.length === 0) return '';
+    if (chars.length === 1) return `'${chars[0]}'`;
+    return `'${chars[0]}' 또는 '${chars[1]}'`;
+};
+
+export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }) {
     const [file, setFile] = useState(null);
     const [previewUrl, setPreviewUrl] = useState(null);
     const [answers, setAnswers] = useState(['']);
@@ -118,37 +133,29 @@ export default function TurnUploadForm({ roomId, onUploaded }) {
                 .upload(filePath, file);
             if (uploadError) throw new Error('UPLOAD_FAILED');
 
-            const { data: insertedTurn, error: insertError } = await supabase
-                .from('turns')
-                .insert({
-                    room_id: roomId,
-                    posted_by: user.id,
-                    photo_url: filePath,
-                    turn_number: 1,
-                })
-                .select()
-                .single();
-            if (insertError) throw new Error('UPLOAD_FAILED');
+            const { data: result, error: rpcError } = await supabase.rpc('submit_turn', {
+                p_room_id: roomId,
+                p_photo_path: filePath,
+                p_answers: entries.map((entry) => entry.value),
+            });
+            if (rpcError) throw new Error('UPLOAD_FAILED');
 
-            const { error: answersError } = await supabase.from('answers').insert(
-                entries.map((entry) => ({
-                    turn_id: insertedTurn.id,
-                    answer_text: entry.value,
-                    last_char: entry.value.slice(-1),
-                }))
-            );
-            if (answersError) throw new Error('ANSWERS_FAILED');
+            if (!result.success) {
+                throw new Error(result.error_code);
+            }
 
             setFile(null);
             setAnswers(['']);
 
             await onUploaded?.();
         } catch (error) {
-            setSubmitError(
-                error.message === 'ANSWERS_FAILED'
-                    ? '정답 저장에 실패했습니다.'
-                    : '사진 업로드에 실패했습니다. 다시 시도해주세요.'
-            );
+            if (error.message === 'invalid_start_char') {
+                setSubmitError(`정답 중 하나는 반드시 ${formatAllowedStartChars(allowedStartChars)}로 시작해야 합니다`);
+            } else if (ERROR_MESSAGES[error.message]) {
+                setSubmitError(ERROR_MESSAGES[error.message]);
+            } else {
+                setSubmitError('사진 업로드에 실패했습니다. 다시 시도해주세요.');
+            }
         } finally {
             setSubmitting(false);
         }

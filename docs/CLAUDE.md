@@ -139,11 +139,28 @@ React(브라우저)  →  Supabase Edge Function(서버, 키 숨김)  →  네�
 - [x] Supabase Storage 버킷(`turn-photos`, private) 생성 + RLS 정책(INSERT/SELECT, 인증 유저 전용) 설정
 - [x] Storage RLS 검증 — anon 업로드 차단, anon 다운로드 차단(`404 Bucket not found`로 존재 자체를 숨김), `/object/public/` 우회 경로도 막혀 있어 버킷이 실수로 public 처리되지 않았음을 확인. 인증 유저는 업로드→다운로드 정상 동작
 - [x] `turns` 테이블 RLS 점검 — 인증 유저 SELECT/INSERT 정상 동작 확인 (검증용 더미 행은 삭제해 정리함)
-- [ ] 업로드 UI, 클라이언트 이미지 압축, 첫 턴/후속 턴 구분 검증은 아직 착수 전
+- [x] `RoomPage.jsx` — 같은 `room_id`의 `turns`를 `turn_number` 오름차순 조회, 없으면 안내 문구만 표시
+- [x] 업로드 UI (`TurnUploadForm.jsx` 신규) — 사진 파일 선택 + 미리보기(`URL.createObjectURL`), turns 없을 때만 표시
+- [x] 압축 없는 기본 업로드 흐름 완성 — `turn-photos`에 업로드 → `turns` insert(`room_id`/`posted_by`/`photo_url`/`turn_number: 1`) → 업로드 성공 시 목록 재조회로 폼이 자동으로 사라지고 사진이 보임
+- [x] `photo_url`은 서명 URL이 아니라 **버킷 내부 경로**로 저장하기로 결정(서명 URL은 만료되므로) — 목록 표시 시마다 `createSignedUrls(paths, 3600)`으로 일괄 변환해서 사용
+- [ ] 클라이언트 이미지 압축은 아직 미착수
+- [ ] 첫 턴/후속 턴 구분 검증은 아직 미착수 — 지금은 `turn_number`가 항상 `1`인 첫 턴 전용 흐름만 있음
 
-**10분 작업 가능 여부 진단**: Phase 1 전체(압축 포함)는 10분 내 완료가 어렵다고 판단. 압축 없는 기본 업로드 흐름(파일 선택 → Storage 업로드 → `turns` insert → 화면 표시)까지만 10분 내 가능. 첫 턴/후속 턴 구분 검증은 지금 방들의 `turns`가 전부 0개라(Phase 2·4 미착수로 SOLVED 턴이 존재할 수 없음) 아직 만들어도 테스트가 안 됨 — 첫 턴 케이스만 우선 구현하는 걸로 방향 정함.
+**겪은 문제 & 해결**
+- 업로드 경로에 원본 파일명을 그대로 써서 한글 파일명(예: "따봉두.jpg")일 때 Storage가 400(InvalidKey)을 반환 → 원본 파일명을 버리고 확장자만 추출(`/\.([a-zA-Z0-9]+)$/`, 실패 시 `jpg`)해서 `${timestamp}_${랜덤6자}.${ext}` 형태로 새로 생성하도록 수정
 
-**다음 세션에서 할 일**: 압축 없는 기본 업로드 흐름부터 구현 (첫 턴 전용). 압축은 흐름이 동작한 뒤 별도로 붙이기.
+**다음 세션에서 할 일**: 클라이언트 이미지 압축, 첫 턴/후속 턴 시작 글자 구분 검증. (정답 등록·저장은 Phase 2에서 이미 완료됨 — 아래 참고)
+
+---
+
+### Phase 2 — 정답 등록 ✅ 완료
+
+- [x] 사진 하나에 정답 여러 개 입력하는 UI (`TurnUploadForm.jsx` 내, `+`/`-`로 필드 증감, 최소 1개 유지)
+- [x] 정답 유효성 검사 — trim 후 빈 값은 검증 제외(필드는 유지) → 유효 값 0개면 "정답을 1개 이상 입력해주세요" → 마지막 글자가 완성형 한글(`/[가-힣]$/`)이 아니면 "한글 음절로 끝나야 합니다" → trim 값 기준 중복이면 "중복된 정답입니다". 값 수정 시 해당 필드 에러는 즉시 사라짐
+- [x] `answers` 테이블 저장 — `turns` insert에 `.select().single()`을 붙여 받은 `turn.id`로 `turn_id`/`answer_text`(trim 원본)/`last_char`(`slice(-1)`)를 배열로 한 번에 insert
+- [x] 실패 처리 — Storage 업로드·turns insert 실패는 "사진 업로드에 실패했습니다. 다시 시도해주세요.", answers insert 실패는 "정답 저장에 실패했습니다."로 구분 표시. 둘 다 자동 롤백은 하지 않음(이미 만들어진 turns 행/Storage 파일은 그대로 둠, MVP 스코프)
+
+**완료 조건 충족**: 사진 + 정답 여러 개를 한 세트로 등록할 수 있다.
 
 ---
 
@@ -161,7 +178,8 @@ photo-word-chain/
   │   │   ├─ auth/Auth.jsx         ← 로그인/회원가입 탭 (이메일+비밀번호+닉네임)
   │   │   └─ rooms/
   │   │       ├─ RoomList.jsx      ← 방 목록 + 방 만들기 폼, 클릭 시 /room/:id로 이동
-  │   │       └─ RoomPage.jsx      ← 방 상세 화면 (이름/만든 사람 표시, 게임 로직은 아직 뼈대)
+  │   │       ├─ RoomPage.jsx      ← 방 상세 화면 (turns 목록 조회/표시, signed URL 변환, 업로드 폼 연결)
+  │   │       └─ TurnUploadForm.jsx ← 사진 선택+미리보기, 정답 입력(+/-), 검증, Storage 업로드+turns/answers insert
   │   └─ App.jsx                   ← 세션 관리 + react-router 라우팅(/, /room/:roomId)
   └─ (Supabase: profiles/rooms/turns/answers/messages/reports 테이블 + handle_new_user 트리거
       + Storage 버킷 `turn-photos`(private, RLS 적용))
@@ -183,3 +201,4 @@ photo-word-chain/
 - Phase 체계 도입 시점 — 게임 규칙 상세를 SPEC.md로 이관, 진행 로그를 Phase 기준으로 재정리, PHASES.md/SPEC.md 참조 구조 명시
 - SPEC v0.4 반영 시점 — 신고 규칙 재설계(만장일치제 → 실시간 즉석 동의) 및 Realtime 기술 검증 과정을 로그에 기록, 기술 스택 표에 Realtime 항목과 운영 주의사항(7일 자동 일시정지, Storage/Realtime 용량 한도) 추가
 - Phase 1 착수 시점 — `turn-photos` Storage 버킷 + RLS 설정 완료 및 검증 기록, `turns` 테이블 RLS 점검 결과 기록, 업로드 UI/압축은 다음 세션으로 이월. `docs/` 폴더가 이 시점 처음으로 git에 커밋됨
+- Phase 1 진행 + Phase 2 완료 시점 — turns 조회/표시, 업로드 폼 UI, 정답 유효성 검사, Storage 업로드+turns insert(경로 기반 저장 + signed URL 변환), answers insert까지 구현. 한글 파일명으로 인한 Storage InvalidKey 버그 수정. Phase 1은 압축·턴 구분이 남아 진행 중, Phase 2는 완료 처리

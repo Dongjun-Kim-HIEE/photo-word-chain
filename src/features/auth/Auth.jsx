@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import '../../styles/theme.css';
+import './Auth.css';
 
 const MIN_PASSWORD_LENGTH = 6;
 const MAX_USERNAME_LENGTH = 20;
@@ -52,39 +54,68 @@ export default function Auth() {
     const isSignUp = mode === 'signup';
 
     return (
-        <div>
-            <h2>로그인 및 회원가입</h2>
-            <div>
-                <button onClick={() => setMode('login')} disabled={mode === 'login'}>
-                    로그인
-                </button>
-                <button onClick={() => setMode('signup')} disabled={mode === 'signup'}>
-                    회원가입
-                </button>
+        <div className="auth-page grass-bg">
+            <div className="auth-card panel-card">
+                <div className="auth-brand">
+                    <div className="auth-brand__logo">🖼️🔗</div>
+                    <h1 className="auth-brand__title">사진 끝말잇기</h1>
+                    <p className="auth-brand__tag">사진으로 잇는 끝말잇기 게임</p>
+                </div>
+
+                <div className="auth-tabs">
+                    <button
+                        className={`auth-tab ${mode === 'login' ? 'active' : ''}`}
+                        onClick={() => setMode('login')}
+                        disabled={mode === 'login'}
+                    >
+                        로그인
+                    </button>
+                    <button
+                        className={`auth-tab ${mode === 'signup' ? 'active' : ''}`}
+                        onClick={() => setMode('signup')}
+                        disabled={mode === 'signup'}
+                    >
+                        회원가입
+                    </button>
+                </div>
+
+                <div className="auth-form">
+                    <div className="field">
+                        <label>이메일</label>
+                        <input
+                            type="email"
+                            placeholder="you@example.com"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                        />
+                    </div>
+                    <div className="field">
+                        <label>비밀번호</label>
+                        <input
+                            type="password"
+                            placeholder="••••••••"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                        />
+                    </div>
+                    {isSignUp && (
+                        <div className="field">
+                            <label>닉네임</label>
+                            <input
+                                type="text"
+                                placeholder="게임에서 보일 이름"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                            />
+                            <span className="hint">나중에 바꿀 수 있어요 · 중복 불가</span>
+                        </div>
+                    )}
+
+                    <button className="btn-primary" onClick={() => handleAuth(isSignUp)} disabled={loading}>
+                        {isSignUp ? '회원가입' : '로그인'}
+                    </button>
+                </div>
             </div>
-            <input
-                type="email"
-                placeholder="이메일"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-            />
-            <input
-                type="password"
-                placeholder="비밀번호"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-            />
-            {isSignUp && (
-                <input
-                    type="text"
-                    placeholder="닉네임"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                />
-            )}
-            <button onClick={() => handleAuth(isSignUp)} disabled={loading}>
-                {isSignUp ? '회원가입' : '로그인'}
-            </button>
         </div>
     );
 }

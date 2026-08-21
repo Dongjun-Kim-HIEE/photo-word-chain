@@ -1,0 +1,108 @@
+/* 세 화면(로그인/로비/게임) 공통 디자인 토큰 + 재사용 유틸리티. 로직에는 관여하지 않는 순수 스타일 시트. */
+
+:root {
+    --grass-1: #6ab04c;
+    --grass-2: #5fa343;
+    --grass-dark: #4e8c38;
+    --ink: #1c2b16;
+    --panel: #ffffff;
+    --panel-line: #e3e8de;
+    --accent: #16321f;
+    --muted: #7a8872;
+    --danger: #b53a3a;
+    --danger-bg: #fbe4e4;
+    --shadow: rgba(20, 40, 20, 0.18);
+}
+
+.grass-bg {
+    background-color: var(--grass-1);
+    background-image: linear-gradient(45deg, var(--grass-2) 25%, transparent 25%),
+        linear-gradient(-45deg, var(--grass-2) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, var(--grass-2) 75%),
+        linear-gradient(-45deg, transparent 75%, var(--grass-2) 75%);
+    background-size: 56px 56px;
+    background-position: 0 0, 0 28px, 28px -28px, -28px 0;
+}
+
+.panel-card {
+    background: var(--panel);
+    border-radius: 16px;
+    box-shadow: 0 4px 16px var(--shadow);
+}
+
+/* 라벨 있는 입력 필드 한 벌 (label + input + 선택적 hint) */
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    text-align: left;
+}
+
+.field label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.field .hint {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.field input,
+.text-input {
+    border: 2px solid var(--panel-line);
+    border-radius: 10px;
+    padding: 11px 14px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--ink);
+    background: #fff;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.field input:focus,
+.text-input:focus {
+    border-color: var(--grass-1);
+}
+
+.btn-primary {
+    border: none;
+    background: var(--grass-dark);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 13px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.08s;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #43792f;
+}
+
+.btn-primary:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.btn-primary:disabled {
+    background: #b7c3b0;
+    cursor: default;
+}
+
+.error-text {
+    color: var(--danger);
+    font-size: 13px;
+}
+
+/* Vite 템플릿 잔재였던 #root 박스 레이아웃(고정폭/세로 테두리/가운데 정렬 텍스트)이
+   전면 grass-bg 디자인과 충돌해 화면 전체 폭을 못 씀 — 실제 라우트 레이아웃에 맞게 해제 */
+#root {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    border-inline: none;
+    text-align: left;
+}

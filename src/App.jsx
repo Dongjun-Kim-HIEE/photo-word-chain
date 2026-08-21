@@ -3,6 +3,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { supabase } from './lib/supabaseClient';
 import { Auth } from './features/auth';
 import { RoomList, RoomPage } from './features/rooms';
+import './styles/theme.css';
+import './styles/lobby.css';
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -29,7 +31,13 @@ export default function App() {
   };
 
   if (!sessionLoaded) {
-    return <div>불러오는 중...</div>;
+    return (
+      <div className="lobby-page grass-bg">
+        <div className="lobby-page__inner">
+          <div className="lobby-topbar panel-card">불러오는 중...</div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -39,10 +47,18 @@ export default function App() {
           path="/"
           element={
             session ? (
-              <div>
-                <h1>사진 끝말잇기 로비</h1>
-                <button onClick={handleLogout}>로그아웃</button>
-                <RoomList />
+              <div className="lobby-page grass-bg">
+                <div className="lobby-page__inner">
+                  <div className="lobby-topbar panel-card">
+                    <span className="lobby-topbar__logo">🖼️🔗</span>
+                    <h1 className="lobby-topbar__title">사진 끝말잇기</h1>
+                    <span className="lobby-topbar__spacer" />
+                    <button className="lobby-topbar__logout" onClick={handleLogout}>
+                      로그아웃
+                    </button>
+                  </div>
+                  <RoomList />
+                </div>
               </div>
             ) : (
               <Auth />

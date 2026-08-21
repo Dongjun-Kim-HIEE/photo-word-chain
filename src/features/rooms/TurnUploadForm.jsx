@@ -1,14 +1,26 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import '../../styles/theme.css';
+import './GameScreen.css';
 
-const ERROR_MESSAGES = {
-    not_the_solver: '정답을 맞힌 사람만 다음 사진을 올릴 수 있습니다',
-    turn_not_solved: '아직 아무도 정답을 맞히지 않았습니다',
+const GUESS_ERROR_MESSAGES = {
+    not_authenticated: '로그인이 필요합니다',
+    no_turn_to_guess: '맞힐 사진이 없습니다',
     turn_invalidated: '이 턴은 무효 처리되었습니다',
+    already_solved: '이미 다른 사람이 진행했습니다',
+    not_your_turn: '지금은 당신의 차례가 아닙니다',
+    cannot_guess_own: '본인이 올린 사진은 맞힐 수 없습니다',
+};
+
+const SUBMIT_ERROR_MESSAGES = {
+    ...GUESS_ERROR_MESSAGES,
+    wrong_guess: '추측이 틀렸습니다.',
     no_answers: '정답을 1개 이상 입력해주세요',
     invalid_answer_ending: '정답은 한글 음절로 끝나야 합니다',
     duplicate_answer: '중복된 정답이 있습니다',
 };
+
+const HANGUL_SYLLABLE_END = /[가-힣]$/;
 
 const formatAllowedStartChars = (chars) => {
     if (!chars || chars.length === 0) return '';
@@ -16,7 +28,13 @@ const formatAllowedStartChars = (chars) => {
     return `'${chars[0]}' 또는 '${chars[1]}'`;
 };
 
-export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }) {
+export default function TurnUploadForm({ roomId, onUploaded, isFirstTurn }) {
+    const [guess, setGuess] = useState('');
+    const [guessChecking, setGuessChecking] = useState(false);
+    const [guessError, setGuessError] = useState('');
+    const [guessConfirmed, setGuessConfirmed] = useState(false);
+    const [allowedStartChars, setAllowedStartChars] = useState(null);
+
     const [file, setFile] = useState(null);
     const [previewUrl, setPreviewUrl] = useState(null);
     const [answers, setAnswers] = useState(['']);
@@ -24,8 +42,6 @@ export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }
     const [fieldErrors, setFieldErrors] = useState({});
     const [submitError, setSubmitError] = useState('');
     const [submitting, setSubmitting] = useState(false);
-
-    const HANGUL_SYLLABLE_END = /[가-힣]$/;
 
     useEffect(() => {
         if (!file) {
@@ -40,6 +56,8 @@ export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }
             URL.revokeObjectURL(objectUrl);
         };
     }, [file]);
+
+    const showPhotoSection = isFirstTurn || guessConfirmed;
 
     const handleFileChange = (e) => {
         setFile(e.target.files?.[0] ?? null);
@@ -66,9 +84,43 @@ export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }
         setGeneralError('');
     };
 
+    const handleCheckGuess = async () => {
+        const trimmed = guess.trim();
+        if (!trimmed) return;
+
+        setGuessError('');
+        setGuessChecking(true);
+        try {
+            const { data: result, error } = await supabase.rpc('check_guess', {
+                p_room_id: roomId,
+                p_guess: trimmed,
+            });
+            if (error) throw error;
+
+            if (!result.success) {
+                setGuessError(GUESS_ERROR_MESSAGES[result.error_code] ?? '추측 확인에 실패했습니다.');
+                return;
+            }
+
+            if (!result.correct) {
+                setGuessError('틀렸습니다. 다시 시도해보세요.');
+                return;
+            }
+
+            setAllowedStartChars(result.allowed_start_chars ?? null);
+            setGuessConfirmed(true);
+        } catch {
+            setGuessError('추측 확인에 실패했습니다. 다시 시도해주세요.');
+        } finally {
+            setGuessChecking(false);
+        }
+    };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setSubmitError('');
+
+        if (!showPhotoSection) return;
 
         const entries = answers
             .map((value, index) => ({ index, value: value.trim() }))
@@ -110,6 +162,16 @@ export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }
             return;
         }
 
+        if (!isFirstTurn && allowedStartChars && allowedStartChars.length > 0) {
+            const hasAllowedStart = entries.some((entry) => allowedStartChars.includes(entry.value[0]));
+            if (!hasAllowedStart) {
+                setGeneralError(
+                    `정답 중 하나는 반드시 ${formatAllowedStartChars(allowedStartChars)}로 시작해야 합니다`
+                );
+                return;
+            }
+        }
+
         setFieldErrors({});
 
         if (!file) {
@@ -135,24 +197,33 @@ export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }
 
             const { data: result, error: rpcError } = await supabase.rpc('submit_turn', {
                 p_room_id: roomId,
+                p_guess: isFirstTurn ? null : guess.trim(),
                 p_photo_path: filePath,
                 p_answers: entries.map((entry) => entry.value),
             });
             if (rpcError) throw new Error('UPLOAD_FAILED');
 
             if (!result.success) {
-                throw new Error(result.error_code);
+                const err = new Error(result.error_code);
+                err.result = result;
+                throw err;
             }
 
+            setGuess('');
+            setGuessChecking(false);
+            setGuessError('');
+            setGuessConfirmed(false);
+            setAllowedStartChars(null);
             setFile(null);
             setAnswers(['']);
 
             await onUploaded?.();
         } catch (error) {
             if (error.message === 'invalid_start_char') {
-                setSubmitError(`정답 중 하나는 반드시 ${formatAllowedStartChars(allowedStartChars)}로 시작해야 합니다`);
-            } else if (ERROR_MESSAGES[error.message]) {
-                setSubmitError(ERROR_MESSAGES[error.message]);
+                const chars = error.result?.allowed_start_chars ?? allowedStartChars;
+                setSubmitError(`정답 중 하나는 반드시 ${formatAllowedStartChars(chars)}로 시작해야 합니다`);
+            } else if (SUBMIT_ERROR_MESSAGES[error.message]) {
+                setSubmitError(SUBMIT_ERROR_MESSAGES[error.message]);
             } else {
                 setSubmitError('사진 업로드에 실패했습니다. 다시 시도해주세요.');
             }
@@ -162,50 +233,95 @@ export default function TurnUploadForm({ roomId, onUploaded, allowedStartChars }
     };
 
     return (
-        <form onSubmit={handleSubmit}>
-            <div>
-                <input type="file" accept="image/*" onChange={handleFileChange} />
-                {previewUrl && (
-                    <img
-                        src={previewUrl}
-                        alt="미리보기"
-                        style={{ maxWidth: '100%', display: 'block', marginTop: '0.5rem' }}
-                    />
-                )}
-            </div>
-
-            <div>
-                {answers.map((answer, index) => (
-                    <div key={index}>
+        <form className="turn-form panel-card" onSubmit={handleSubmit}>
+            {!isFirstTurn && (
+                <div className="guess-step">
+                    {!guessConfirmed && <p className="turn-form__stage-title">이 사진, 뭘까요?</p>}
+                    <div className="guess-box">
                         <input
+                            className="guess-box__input"
                             type="text"
-                            value={answer}
-                            onChange={(e) => handleAnswerChange(index, e.target.value)}
-                            placeholder="정답 입력"
+                            value={guess}
+                            onChange={(e) => {
+                                setGuess(e.target.value);
+                                setGuessError('');
+                            }}
+                            placeholder="이전 사진 맞히기"
+                            readOnly={guessConfirmed}
                         />
-                        <button
-                            type="button"
-                            onClick={() => handleRemoveAnswer(index)}
-                            disabled={answers.length === 1}
-                        >
-                            -
-                        </button>
-                        {fieldErrors[index] && (
-                            <div style={{ color: 'red', fontSize: '0.8rem' }}>{fieldErrors[index]}</div>
+                        {!guessConfirmed && (
+                            <button
+                                type="button"
+                                className="guess-box__submit"
+                                onClick={handleCheckGuess}
+                                disabled={guessChecking || !guess.trim()}
+                            >
+                                {guessChecking ? '확인 중...' : '확인'}
+                            </button>
                         )}
                     </div>
-                ))}
-                <button type="button" onClick={handleAddAnswer}>
-                    +
-                </button>
-            </div>
+                    {guessError && <p className="form-error">{guessError}</p>}
+                    {guessConfirmed && (
+                        <p className="guess-confirmed-badge">
+                            정답! 이제 {formatAllowedStartChars(allowedStartChars)}로 시작하는 사진을
+                            올려주세요
+                        </p>
+                    )}
+                </div>
+            )}
 
-            {generalError && <p style={{ color: 'red' }}>{generalError}</p>}
-            {submitError && <p style={{ color: 'red' }}>{submitError}</p>}
+            {showPhotoSection && (
+                <div className="photo-section">
+                    <p className="turn-form__stage-title">
+                        {isFirstTurn ? '첫 사진을 올려주세요' : '내 사진 올리기'}
+                    </p>
+                    <div className="upload-drop">
+                        <input
+                            className="upload-drop__input"
+                            type="file"
+                            accept="image/*"
+                            onChange={handleFileChange}
+                        />
+                        {previewUrl && <img className="upload-preview" src={previewUrl} alt="미리보기" />}
+                    </div>
 
-            <button type="submit" disabled={submitting}>
-                {submitting ? '업로드 중...' : '제출'}
-            </button>
+                    <div className="answer-fields">
+                        {answers.map((answer, index) => (
+                            <div key={index} className="answer-field-row">
+                                <div className="answer-input">
+                                    <input
+                                        type="text"
+                                        value={answer}
+                                        onChange={(e) => handleAnswerChange(index, e.target.value)}
+                                        placeholder="정답 입력"
+                                    />
+                                    <button
+                                        type="button"
+                                        className="mini-btn"
+                                        onClick={() => handleRemoveAnswer(index)}
+                                        disabled={answers.length === 1}
+                                    >
+                                        -
+                                    </button>
+                                </div>
+                                {fieldErrors[index] && (
+                                    <div className="field-error">{fieldErrors[index]}</div>
+                                )}
+                            </div>
+                        ))}
+                        <button type="button" className="mini-btn mini-btn--add" onClick={handleAddAnswer}>
+                            +
+                        </button>
+                    </div>
+
+                    {generalError && <p className="form-error">{generalError}</p>}
+                    {submitError && <p className="form-error">{submitError}</p>}
+
+                    <button type="submit" className="submit-btn" disabled={submitting}>
+                        {submitting ? '업로드 중...' : '사진 올리고 이어가기'}
+                    </button>
+                </div>
+            )}
         </form>
     );
 }

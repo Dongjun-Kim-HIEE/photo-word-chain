@@ -250,27 +250,83 @@ Playwright로 회원가입 → 방 생성 → 방 입장 → 사진 업로드 �
 
 ---
 
+### Phase 5R — 턴 제출 통합 재작업 ✅ 완료
+
+**배경 (Phase 6 착수 중 발견된 치명적 문제)**: Phase 5에서 `GuessForm.jsx`를 삭제하면서 "이전 사진을 추측하는 입력 수단" 자체가 사라졌음. `submit_turn`은 추측 파라미터 없이 "이미 SOLVED된 상태"를 전제로 동작하는데, 그 SOLVED를 만들어줄 `submit_guess` 호출부가 없어져 턴 1 이후 게임 진행이 불가능했음. 게다가 순번제(`room_members`/`get_turn_holder`)가 PHASES.md 체크리스트엔 있었으나 실제로는 구현되지 않고 "직전 solver가 다음 턴" 방식으로 만들어져 있었음(pg_proc 조회로 `room_members`/`get_turn_holder` 부재 확인). 사용자가 "고정 순번제(A→B→C 순환)"를 원한다고 확정하여 SPEC.md 1-1절 원안대로 재구축.
+
+- [x] **5R-0**: `room_members` 테이블(room_id, user_id, joined_at, 복합 PK) + RLS 신설 — 본인 INSERT(`auth.uid() = user_id`) / 인증 유저 SELECT, UPDATE·DELETE 정책 없음(순번 조작 방지). `get_turn_holder(p_room_id, p_turn_number)` 함수 — joined_at 오름차순 0-based 인덱싱 후 (turn_number-1) mod N 위치의 user_id 반환
+- [x] **5R-A**: `check_guess(p_room_id, p_guess) returns jsonb` — 순번 검증(get_turn_holder) + 자기 사진 금지 + 추측 대조(SPEC.md 3절: lower+trim+NFC) + turn_attempts 기록. 정답이어도 SOLVED 전이는 하지 않고 { correct, allowed_start_chars }만 반환(UX용 사전 검증)
+- [x] **5R-B**: `submit_turn`을 DROP 후 `(p_room_id, p_guess, p_photo_path, p_answers)` 4파라미터로 재생성 — pg_advisory_xact_lock → 첫 턴(순번 0번만, 추측·시작글자 제한 없음) / 후속 턴(순번 검증 → 자기 사진 금지 → 추측 재검증 → 오답이면 turn_attempts만 남기고 wrong_guess 반환, 사진 미저장 → Phase 2 규칙 재검증 → 시작 글자 검증) → 모든 검증 통과 후에만 직전 턴 조건부 SOLVED UPDATE + 새 turns/answers insert. error_code: not_authenticated/not_your_turn/cannot_guess_own/turn_invalidated/already_solved/wrong_guess/no_answers/invalid_answer_ending/duplicate_answer/invalid_start_char
+- [x] **5R-C (프론트, Claude Code)**: `RoomPage.jsx` 방 입장 시 `room_members` upsert(`onConflict: 'room_id,user_id', ignoreDuplicates: true`, joined_at 미전달) → fetchTurns 전에 await. `refreshUploadGate()`(구 is_last_turn_solver 기반) 제거하고 `get_turn_holder` 기반 `refreshTurnHolderForTurn`/`refreshTurnHolderFromTurnsList`로 교체, postgres_changes INSERT/UPDATE 콜백에서도 재계산(turnsRef 활용). 신규 state: turnHolderId/turnHolderUsername/memberCount. 폼 노출 = 내 차례일 때만, 아니면 "지금은 OOO님의 차례입니다", 멤버 1명이고 turns>0이면 "2명 이상 입장해야…" 안내
+- [x] **5R-C**: `TurnUploadForm.jsx` — `isFirstTurn` prop으로 분기. 첫 턴은 추측 없이 사진+정답(p_guess=null). 후속 턴은 2단계: 추측 입력+"확인"→check_guess(오답 무제한 재시도, 정답이면 입력 잠금+allowed_start_chars 저장+사진/정답 영역 공개). 클라 검증(1개 이상/한글 음절/중복/시작 글자 1개 이상 매칭) 통과 후에만 Storage 업로드→submit_turn. 파일명 생성 로직(`${timestamp}_${랜덤6자}.${ext}`) 유지. 성공 시 폼 전체 초기화
+- [x] **5R-C**: `GuessForm.jsx` 삭제, `submit_guess`/`is_last_turn_solver`/`get_allowed_start_chars` 호출부 전부 제거. eslint/`npm run build` 통과 확인
+
+**겪은 문제 & 해결**:
+- SQL로 직접 테스트가 안 되는 지점(RPC가 auth.uid() 참조) — 브라우저 콘솔에서 로그인 상태로 `supabase.rpc()` 호출해 검증하는 방식 사용
+- `submit_turn` GRANT 문에서 파라미터 타입을 `(uuid, text, text[], text[])`로 잘못 적어 `function does not exist` 에러 → 실제 시그니처 `(uuid, text, text, text[])`로 수정
+- 초기에 6-A/6-B 테스트 데이터를 만들 때 "맞히기"와 "SOLVED 전환"을 별개 단계로 흉내 냈다가, 실제 게임 흐름(추측→맞히면 사진 업로드가 한 번에)과 안 맞음을 사용자가 지적 → submit_guess/submit_turn 실제 정의를 다시 확인하고 문제(추측 UI 부재)를 발견한 계기가 됨
+
+**완료 조건 검증**: 사용자가 직접 계정 여러 개로 플레이 — A(0번)가 사진 올리면 B에게만 폼, B가 맞혀야 업로드 영역 열림, 시작 글자 규칙 강제, 오답 시 Storage 파일 미생성, 성공 후 C로 폼 이동. "큰 기능들 모두 구현된 것 같다"로 확인.
+
+---
+
+### Phase 6 — 신고/무효 처리 (진행 중, 6-A/6-B 완료)
+
+> SPEC.md 5절 기준. 10초 판정 주체 = **서버 사이드 확정**(SPEC.md v0.6). 별도 서버 프로세스/Edge Function 없이 Postgres 함수만으로 처리 — 판정 로직이 순수하게 now()와 expires_at 비교로만 이루어져 아무 때나 호출돼도 정확한 "지연 평가" 방식(cron 불필요).
+
+**6-A — reports 테이블 보강 (SQL Editor 직접 실행)**
+- [x] 기존 `reports`는 (id, turn_id, reported_by, created_at)뿐 + `unique(turn_id, reported_by)` 제약(구 만장일치제 잔재)이었음
+- [x] 컬럼 추가: `reported_user_id`(→profiles FK), `status`(pending/invalidated/expired CHECK), `required_voters uuid[]`, `agreed_voters uuid[]`, `expires_at timestamptz`
+- [x] `reports_no_self_report` CHECK 제약(`reported_by <> reported_user_id`) — 자기 신고 DB 단 금지
+- [x] 구 `unique(turn_id, reported_by)` 제약 삭제(재시도 허용 위해), 대신 `reports_one_pending_per_turn` 부분 유니크 인덱스(`WHERE status='pending'`)로 "턴당 진행 중 신고 1건" 보장
+- [x] 직접 INSERT 정책(`authenticated users can report`) 제거 → SECURITY DEFINER RPC 전용화. SELECT 정책만 유지
+
+**6-B — start_report RPC (SQL Editor 직접 실행)**
+- [x] `start_report(p_turn_id uuid, p_presence_snapshot uuid[]) returns jsonb` — turns FOR UPDATE 잠금 → SOLVED 검증(not_solved/already_invalidated) → turn_attempts에서 피신고자(solver) 조회 → 자기신고 차단(cannot_report_self) → 스냅샷에서 피신고자+신고자 제외한 required_voters 계산 → 최소 인원 재검증(not_enough_voters) → reports insert(agreed_voters=[신고자], expires_at=now()+10초). 중복 pending은 unique_violation 캐치해서 report_already_pending 반환
+- [x] GRANT EXECUTE TO authenticated
+
+**남은 것**: 6-A/6-B 통합 검증(5R 완료로 정상 진행 가능해진 뒤 수행), 6-C(submit_report_vote/resolve_report), 6-D(프론트 신고 UI), 6-E(무효 후 분기 — submit_turn이 마지막 유효 SOLVED 턴 기준으로 시작 글자 계산), 6-F(다중 브라우저 10초 타이머 검증).
+
+**겪은 문제 & 해결**:
+- `turn_attempts_turn_id_fkey`에 `ON DELETE CASCADE`가 없어 테스트 방 `DELETE FROM rooms`가 실패 → DROP 후 `ON DELETE CASCADE`로 재생성. (CLAUDE.md 원칙 "모든 FK에 CASCADE"에 맞춤)
+- `rooms` 삭제 시 Storage `turn-photos` 버킷의 사진 파일이 orphan으로 남는 문제 발견 → `turns` AFTER DELETE 트리거 `trg_delete_turn_photo`(SECURITY DEFINER) 신설, `storage.objects`에서 `bucket_id='turn-photos' AND name=OLD.photo_url` 행을 함께 삭제. 이제 방 삭제 시 사진까지 CASCADE 정리됨
+
+---
+
+### 신규 규칙 확정 (SPEC.md v0.8 — Phase 7~9 대비)
+
+사용자와 논의해 아래 규칙을 확정하고 SPEC.md에 반영함:
+- **오답 3회 제한(하트)**: 각 사람의 각 턴마다 오답 3회, 소진 시 게임 종료. 하트는 턴마다 리셋(누적 아님)
+- **게임 종료**: 3번 틀린 사람 패배 / 나머지 승리. 못 맞힌 OPEN 턴의 대표 정답 공개
+- **대표/보조 정답**: 첫 번째 등록 정답 = 대표 정답(게임 종료 공개용 + 재시작 기준점). 정상 플레이 중 다음 시작 글자는 여전히 "맞힌 정답"의 끝 글자로 계산(변경 없음)
+- **재시작(다시 플레이하기)**: 방장만 가능. 기존 사슬 유지, 패배자가 새 순번 0번이 되어 공개된 대표 정답 끝 글자부터 이어감
+- **방 관리**: 방장만 "방 삭제" 버튼, 참여자는 "나가기" 버튼. 둘 다 명시적 버튼(Presence 이탈을 나감으로 간주 안 함). 나가도 room_members joined_at은 보존(순번 유지)
+- **배포 최후순위 이동**: 모든 기능 완성 후 마지막에 배포(Phase 17)
+
+
 ## 7. 참고 — 지금 프로젝트에 있는 핵심 파일
 
 ```
 photo-word-chain/
   ├─ .env                          ← Supabase URL/key (GitHub 비공개)
   ├─ docs/
-  │   ├─ SPEC.md                   ← 게임 규칙 룰북 (v0.5)
-  │   └─ PHASES.md                 ← 개발 로드맵 (v0.9, Phase 0~11)
+  │   ├─ SPEC.md                   ← 게임 규칙 룰북 (v0.8)
+  │   └─ PHASES.md                 ← 개발 로드맵 (v0.11, Phase 0~17)
   ├─ src/
   │   ├─ lib/supabaseClient.js     ← Supabase 연결 객체
   │   ├─ features/
   │   │   ├─ auth/Auth.jsx         ← 로그인/회원가입 탭 (이메일+비밀번호+닉네임)
   │   │   └─ rooms/
   │   │       ├─ RoomList.jsx      ← 방 목록 + 방 만들기 폼, 클릭 시 /room/:id로 이동
-  │   │       ├─ RoomPage.jsx      ← 방 상세 화면 (room_feed 사슬 조회, Realtime 3채널, GuessForm/TurnUploadForm 연결)
-  │   │       ├─ TurnUploadForm.jsx ← 사진 선택+미리보기, 정답 입력(+/-), 검증, Storage 업로드+turns/answers insert
-  │   │       └─ GuessForm.jsx     ← 정답 입력 UI, submit_guess RPC 호출 + 결과(정답/오답/이미 맞힘) 표시
+  │   │       ├─ RoomPage.jsx      ← 방 상세 화면 (room_feed 사슬 조회, Realtime 3채널, room_members upsert, get_turn_holder 기반 순번 폼 노출, TurnUploadForm 연결)
+  │   │       └─ TurnUploadForm.jsx ← isFirstTurn 분기 2단계 폼(추측→check_guess→사진/정답), Storage 업로드+submit_turn RPC
+  │   │       (GuessForm.jsx는 Phase 5R에서 삭제됨)
   │   └─ App.jsx                   ← 세션 관리 + react-router 라우팅(/, /room/:roomId)
-  └─ (Supabase: profiles/rooms/turns/answers/messages/reports/turn_attempts 테이블 + handle_new_user 트리거
-      + Storage 버킷 `turn-photos`(private, RLS 적용)
-      + RPC: submit_guess/submit_turn/compute_start_chars/get_allowed_start_chars/is_last_turn_solver
+  └─ (Supabase:
+      테이블: profiles/rooms/turns/answers/messages/reports/turn_attempts/room_members + handle_new_user 트리거
+      Storage: 버킷 `turn-photos`(private, RLS 적용), turns DELETE 시 사진 함께 삭제하는 trg_delete_turn_photo 트리거
+      RPC: submit_turn(4파라미터)/check_guess/compute_start_chars/get_turn_holder/start_report
+           (submit_guess/is_last_turn_solver/get_allowed_start_chars는 5R에서 호출부 제거됨, DB 함수는 잔존)
       (전부 SQL Editor로 직접 관리, 마이그레이션 파일 미보유))
 ```
 
@@ -295,4 +351,4 @@ photo-word-chain/
 - Phase 3-C 진행 시점 — Presence 전용 채널로 접속자 실시간 추적 + 탭 전환 방어 코드 추가. `turns` 테이블이 Realtime publication에서 기본적으로 꺼져 있어 새로고침해야만 반영되던 문제를 발견하고 해결. Broadcast(3-D)만 남음
 - Phase 3-D 진행 시점 — Broadcast 전용 채널 골격 마련(`report_test` 이벤트로 송수신만 검증, 임시 테스트 버튼). Phase 3(3-A~3-D) 전체 완료 처리
 - Phase 4 완료 시점 — 두음법칙 최종 결정(SPEC.md v0.5), `GuessForm.jsx`로 `submit_guess` RPC 호출 + 결과 표시 구현. Phase 3-B의 postgres_changes 구독을 재사용해 정답 확정을 반영, `answers` 직접 조회는 추가하지 않음
-- Phase 5 완료 시점 — `submit_turn`/`get_allowed_start_chars`/`is_last_turn_solver` RPC 신설 + `compute_start_chars`로 두음법칙 함수 재사용(이름 정리) + `turns` unique 제약 추가. `TurnUploadForm.jsx`/`RoomPage.jsx`를 새 RPC에 맞게 갱신. 계정 3개로 완료 조건 실제 검증. `turns` INSERT RLS가 RPC 우회 가능한 상태로 남아있는 이슈 발견 및 보류 기록
+- Phase 5 완료 시점 — `submit_turn`/`get_allowed_start_chars`/`is_last_turn_solver` RPC 신설 + `compute_start_chars`로 두음법칙 함수 재사용(이름 정리) + `turns` unique 제약 추가. `TurnUploadForm.jsx`/`RoomPage.jsx`를 새 RPC에 맞게 갱신. 계정 3개로 완료 조건 실제 검증. `turns` INSERT RLS가 RPC 우회 가능한 상태로 남아있는 이슈 발견 및 보류 기록- Phase 5R + Phase 6(6-A/6-B) 진행 시점 — **게임이 진행 불가능했던 문제 발견 및 재작업**: GuessForm 삭제로 추측 수단이 사라지고 순번제가 미구현이었음을 발견, `room_members`/`get_turn_holder`/`check_guess` 신설 + `submit_turn` 4파라미터(추측 통합) 개편 + 프론트 2단계 폼으로 재구현(5R). 신고 기능 6-A(reports 스키마 보강)/6-B(start_report RPC) 완료. `turn_attempts` FK에 CASCADE 추가, `trg_delete_turn_photo` 트리거로 방 삭제 시 Storage 사진 orphan 방지. SPEC.md v0.8(하트/게임종료/대표정답/방관리)·PHASES.md v0.11(배포 최후순위, Phase 7~17 재편) 반영. 사용자가 새 기능 다수(오답3회+하트/게임종료+재시작/방관리/엔터·클립보드/순수채팅/상단사슬UI/이미지검색·캔버스) 확정

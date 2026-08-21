@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabaseClient';
 import TurnUploadForm from './TurnUploadForm';
-import GuessForm from './GuessForm';
+import '../../styles/theme.css';
+import './GameScreen.css';
 
 export default function RoomPage() {
     const { roomId } = useParams();
@@ -15,8 +16,9 @@ export default function RoomPage() {
     const [notFound, setNotFound] = useState(false);
     const [onlineUsers, setOnlineUsers] = useState([]);
     const [currentUserId, setCurrentUserId] = useState(null);
-    const [allowedStartChars, setAllowedStartChars] = useState(null);
-    const [isLastTurnSolver, setIsLastTurnSolver] = useState(false);
+    const [turnHolderId, setTurnHolderId] = useState(null);
+    const [turnHolderUsername, setTurnHolderUsername] = useState(null);
+    const [memberCount, setMemberCount] = useState(0);
 
     const broadcastChannelRef = useRef(null);
     const currentUserIdRef = useRef(null);
@@ -26,26 +28,56 @@ export default function RoomPage() {
         answerTextsRef.current = answerTexts;
     }, [answerTexts]);
 
+    const turnsRef = useRef([]);
+    useEffect(() => {
+        turnsRef.current = turns;
+    }, [turns]);
+
+    // 다음 턴 담당자(순번)와 현재 방 인원을 다시 계산한다.
+    const refreshTurnHolderForTurn = async (nextTurnNumber) => {
+        const [{ data: holderId }, { count }] = await Promise.all([
+            supabase.rpc('get_turn_holder', { p_room_id: roomId, p_turn_number: nextTurnNumber }),
+            supabase
+                .from('room_members')
+                .select('user_id', { count: 'exact', head: true })
+                .eq('room_id', roomId),
+        ]);
+
+        setTurnHolderId(holderId ?? null);
+        setMemberCount(count ?? 0);
+    };
+
+    const refreshTurnHolderFromTurnsList = async (turnsList) => {
+        const lastTurn = turnsList[turnsList.length - 1];
+        const nextTurnNumber = lastTurn ? (lastTurn.turnNumber ?? turnsList.length) + 1 : 1;
+        await refreshTurnHolderForTurn(nextTurnNumber);
+    };
+
+    // 담당자 유저네임 조회 (내 차례가 아닐 때만 필요)
     useEffect(() => {
         let cancelled = false;
 
-        supabase.auth.getUser().then(({ data: { user } }) => {
-            if (!cancelled) setCurrentUserId(user?.id ?? null);
-        });
+        const loadTurnHolderUsername = async () => {
+            if (!turnHolderId || turnHolderId === currentUserId) {
+                if (!cancelled) setTurnHolderUsername(null);
+                return;
+            }
+
+            const { data } = await supabase
+                .from('profiles')
+                .select('username')
+                .eq('id', turnHolderId)
+                .maybeSingle();
+
+            if (!cancelled) setTurnHolderUsername(data?.username ?? null);
+        };
+
+        loadTurnHolderUsername();
 
         return () => {
             cancelled = true;
         };
-    }, []);
-
-    const refreshUploadGate = async () => {
-        const [{ data: allowed }, { data: solver }] = await Promise.all([
-            supabase.rpc('get_allowed_start_chars', { p_room_id: roomId }),
-            supabase.rpc('is_last_turn_solver', { p_room_id: roomId }),
-        ]);
-        setAllowedStartChars(allowed ?? null);
-        setIsLastTurnSolver(Boolean(solver));
-    };
+    }, [turnHolderId, currentUserId]);
 
     const fetchTurns = async () => {
         const { data: feedData } = await supabase
@@ -61,7 +93,7 @@ export default function RoomPage() {
             setTurns([]);
             setSignedUrls({});
             setAnswerTexts({});
-            await refreshUploadGate();
+            await refreshTurnHolderFromTurnsList([]);
             return;
         }
 
@@ -110,15 +142,32 @@ export default function RoomPage() {
         setTurns(rows);
         setSignedUrls(urlMap);
         setAnswerTexts(answerTextMap);
-        await refreshUploadGate();
+        await refreshTurnHolderFromTurnsList(rows);
     };
 
     useEffect(() => {
         let cancelled = false;
 
-        const fetchRoom = async () => {
+        const init = async () => {
             setLoading(true);
             setNotFound(false);
+
+            const {
+                data: { user },
+            } = await supabase.auth.getUser();
+            if (cancelled) return;
+            setCurrentUserId(user?.id ?? null);
+
+            if (user) {
+                // joined_at은 최초 입장 시각 1회만 기록되어야 하므로 이미 있으면 갱신하지 않는다.
+                await supabase
+                    .from('room_members')
+                    .upsert(
+                        { room_id: roomId, user_id: user.id },
+                        { onConflict: 'room_id,user_id', ignoreDuplicates: true }
+                    );
+            }
+            if (cancelled) return;
 
             const { data: roomData, error } = await supabase
                 .from('rooms')
@@ -156,7 +205,7 @@ export default function RoomPage() {
             setLoading(false);
         };
 
-        fetchRoom();
+        init();
 
         return () => {
             cancelled = true;
@@ -195,7 +244,7 @@ export default function RoomPage() {
                 setSignedUrls((prev) => ({ ...prev, [inserted.id]: signedData.signedUrl }));
             }
 
-            await refreshUploadGate();
+            await refreshTurnHolderForTurn(inserted.turn_number + 1);
         };
 
         const handleTurnUpdate = async (updated) => {
@@ -223,7 +272,7 @@ export default function RoomPage() {
                 }
             }
 
-            await refreshUploadGate();
+            await refreshTurnHolderFromTurnsList(turnsRef.current);
         };
 
         const channel = supabase
@@ -366,85 +415,96 @@ export default function RoomPage() {
     };
 
     if (loading) {
-        return <div>불러오는 중...</div>;
-    }
-
-    if (notFound) {
         return (
-            <div>
-                <p>방을 찾을 수 없습니다.</p>
-                <Link to="/">목록으로 돌아가기</Link>
+            <div className="room-page grass-bg">
+                <div className="room-page__inner">
+                    <div className="status-panel panel-card">불러오는 중...</div>
+                </div>
             </div>
         );
     }
 
-    return (
-        <div>
-            <Link to="/">← 방 목록</Link>
-            <h2>{room.name}</h2>
-            <p>만든 사람: {creatorUsername ?? '알 수 없음'}</p>
-            <p>
-                현재 접속자:{' '}
-                {onlineUsers.length === 0
-                    ? '-'
-                    : onlineUsers.map((u) => u.username).join(', ')}
-            </p>
-            {/* TEMP: Phase 6에서 실제 "억지 신고" 버튼으로 교체 예정 */}
-            <button onClick={handleTestBroadcast}>Broadcast 테스트</button>
-
-            {turns.length === 0 ? (
-                <>
-                    <p>아직 사진이 없습니다. 첫 사진을 올려보세요.</p>
-                    <TurnUploadForm roomId={roomId} onUploaded={fetchTurns} />
-                </>
-            ) : (
-                <div>
-                    {turns.map((turn) => (
-                        <div key={turn.id} style={{ marginBottom: '1rem' }}>
-                            {turn.isInvalidated && (
-                                <p style={{ color: 'red', fontWeight: 'bold' }}>무효 처리됨</p>
-                            )}
-                            <img
-                                src={signedUrls[turn.id]}
-                                alt={`turn ${turn.turnNumber ?? ''}`}
-                                style={{ maxWidth: '100%', display: 'block' }}
-                            />
-                            {turn.matchedAnswerId && (
-                                <p>정답: {answerTexts[turn.matchedAnswerId] ?? '...'}</p>
-                            )}
-                        </div>
-                    ))}
-                    {(() => {
-                        const latestTurn = turns[turns.length - 1];
-                        if (
-                            latestTurn &&
-                            latestTurn.matchedAnswerId === null &&
-                            currentUserId &&
-                            latestTurn.postedBy !== currentUserId
-                        ) {
-                            return <GuessForm turnId={latestTurn.id} />;
-                        }
-                        return null;
-                    })()}
-                    {isLastTurnSolver && (
-                        <>
-                            {allowedStartChars && (
-                                <p>
-                                    다음 시작 글자:{' '}
-                                    {allowedStartChars.length === 1
-                                        ? allowedStartChars[0]
-                                        : `${allowedStartChars[0]} 또는 ${allowedStartChars[1]}`}
-                                </p>
-                            )}
-                            <TurnUploadForm
-                                roomId={roomId}
-                                onUploaded={fetchTurns}
-                                allowedStartChars={allowedStartChars}
-                            />
-                        </>
-                    )}
+    if (notFound) {
+        return (
+            <div className="room-page grass-bg">
+                <div className="room-page__inner">
+                    <div className="status-panel panel-card">
+                        <p>방을 찾을 수 없습니다.</p>
+                        <Link to="/" className="room-topbar__back">
+                            목록으로 돌아가기
+                        </Link>
+                    </div>
                 </div>
-            )}
+            </div>
+        );
+    }
+
+    const isFirstTurn = turns.length === 0;
+    const notEnoughMembers = !isFirstTurn && memberCount < 2;
+    const isMyTurn = Boolean(currentUserId) && turnHolderId === currentUserId;
+
+    return (
+        <div className="room-page grass-bg">
+            <div className="room-page__inner">
+                <div className="room-topbar">
+                    <Link to="/" className="room-topbar__back">
+                        ← 방 목록
+                    </Link>
+                    <div className="room-topbar__info">
+                        <h2 className="room-topbar__title">{room.name}</h2>
+                        <p className="room-topbar__meta">만든 사람: {creatorUsername ?? '알 수 없음'}</p>
+                    </div>
+                    <span className="room-topbar__spacer" />
+                    <div className="room-topbar__online">
+                        <span className="room-topbar__online-label">현재 접속자</span>
+                        <span className="room-topbar__online-value">
+                            {onlineUsers.length === 0
+                                ? '-'
+                                : onlineUsers.map((u) => u.username).join(', ')}
+                        </span>
+                    </div>
+                    {/* TEMP: Phase 6에서 실제 "억지 신고" 버튼으로 교체 예정 */}
+                    <button className="btn-ghost-small" onClick={handleTestBroadcast}>
+                        Broadcast 테스트
+                    </button>
+                </div>
+
+                {isFirstTurn ? (
+                    <div className="stage stage-empty panel-card">
+                        <p>아직 사진이 없습니다. 첫 사진을 올려보세요.</p>
+                    </div>
+                ) : (
+                    <div className="turns-list">
+                        {turns.map((turn) => (
+                            <div key={turn.id} className="turn-card panel-card">
+                                {turn.isInvalidated && <p className="turn-card__invalid">무효 처리됨</p>}
+                                <div className="turn-card__photo">
+                                    <img src={signedUrls[turn.id]} alt={`turn ${turn.turnNumber ?? ''}`} />
+                                </div>
+                                {turn.matchedAnswerId && (
+                                    <p className="turn-card__answer">
+                                        정답: {answerTexts[turn.matchedAnswerId] ?? '...'}
+                                    </p>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {notEnoughMembers ? (
+                    <div className="status-panel panel-card">
+                        <p>2명 이상 입장해야 게임을 이어갈 수 있습니다.</p>
+                    </div>
+                ) : isMyTurn ? (
+                    <TurnUploadForm roomId={roomId} onUploaded={fetchTurns} isFirstTurn={isFirstTurn} />
+                ) : (
+                    turnHolderId && (
+                        <div className="status-panel panel-card">
+                            <p>지금은 {turnHolderUsername ?? '...'}님의 차례입니다.</p>
+                        </div>
+                    )
+                )}
+            </div>
         </div>
     );
 }
